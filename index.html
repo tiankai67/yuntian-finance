@@ -329,6 +329,27 @@
     </div>
 
     <div class="card">
+      <h2 class="card-title">云端加密同步（GitHub）</h2>
+      <p class="card-desc">数据以 AES-256-GCM 加密后存入 GitHub 公开仓库的加密文件。即使仓库公开，没有密码也无法读取。永久免费、长期有效。</p>
+      <div class="form-group">
+        <label for="cloud-token">GitHub 访问令牌 (Token)</label>
+        <input type="password" id="cloud-token" placeholder="ghp_..." autocomplete="off">
+        <small class="card-desc">需要 repo 或 public_repo 权限。GitHub → Settings → Developer settings → Personal access tokens 生成。</small>
+      </div>
+      <div class="form-group">
+        <label for="cloud-password">云同步密码</label>
+        <input type="password" id="cloud-password" placeholder="设置独立密码" autocomplete="off">
+        <small class="card-desc">用于加密/解密云端数据，请牢记（遗忘将无法恢复云端数据）。建议与登录/操作密码不同。</small>
+      </div>
+      <div class="settings-actions">
+        <button class="btn btn-primary" id="cloud-save-btn">保存并开启同步</button>
+        <button class="btn" id="cloud-test-btn">测试连接</button>
+        <button class="btn btn-danger" id="cloud-disable-btn">关闭同步</button>
+      </div>
+      <p id="cloud-status-msg" class="card-desc"></p>
+    </div>
+
+    <div class="card">
       <h2 class="card-title">初始设置</h2>
       <div class="form-group">
         <label for="setting-team-name">小队名称</label>
@@ -378,8 +399,8 @@
       <h2 class="card-title">关于</h2>
       <p class="about-text">云天小队财务管理系统 v2.0</p>
       <p class="about-text">功能：收支记账、循环记账、统计分析、云端同步</p>
-      <p class="about-text-muted">数据存储于云端数据库，多设备自动同步</p>
-      <p class="about-text-muted">多层数据保护：云端实时同步 + 本地缓存 + 加密回退 + 定时保活</p>
+      <p class="about-text-muted">数据存储于 GitHub 仓库，AES-256-GCM 加密，多设备自动同步</p>
+      <p class="about-text-muted">多层数据保护：云端加密同步 + 本地缓存 + 加密回退，永久免费且不会过期</p>
     </div>
   </div>
 
@@ -473,7 +494,6 @@
 <!-- Toast -->
 <div id="toast" class="toast" style="display:none"></div>
 
-<script src="config.local.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

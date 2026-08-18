@@ -1,19 +1,17 @@
 /* ============================================================
  * 云天小队财务管理系统 v2.0 - app.js
- * 功能：登录认证、收支记账、循环记账、统计分析、云端同步
- * 数据存储：jsonblob.com 云端数据库 + localStorage 缓存
+ * 功能：登录认证、收支记账、循环记账、统计分析、云端加密同步
+ * 数据存储：GitHub 仓库（AES-256-GCM 加密）+ localStorage 缓存
  * ============================================================ */
 
 (function() {
 'use strict';
 
 /* ===== 认证配置（SHA-256哈希） ===== */
-/* 安全：认证哈希已外置到 config.local.js（该文件被 .gitignore 忽略，不会入库）。
-   部署时复制 config.local.example.js 为 config.local.js 并填入你自己的 SHA-256 哈希。
-   若未配置，登录将不可用——请先创建 config.local.js。 */
-var AUTH = (typeof window !== 'undefined' && window.__LOCAL_AUTH)
-  ? window.__LOCAL_AUTH
-  : { u: '', p: '' };
+var AUTH = {
+  u: 'f4277deb9a04ea46a48d79fa5f9cc48dce186a57ae657e3191437c3c9b69ccd4',
+  p: '3ffab7445150d7e673fa554200fe529a625b734ca8c305c4bfbb112b850e9acd'
+};
 
 function sha256(str) {
   return crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)).then(function(buf) {
@@ -29,25 +27,40 @@ function checkAuth(username, password) {
   });
 }
 
-/* ===== 云端数据库配置 ===== */
-var CLOUD_API = 'https://jsonblob.com/api/jsonBlob';
-// 安全：云端 blob id 已外置到 config.local.js（gitignore，不入库）。见 config.local.example.js。
-var CLOUD_BLOB_ID = (typeof window !== 'undefined' && window.__LOCAL_BLOB_ID)
-  ? window.__LOCAL_BLOB_ID
-  : '';
-var BLOB_ID_KEY = 'yuntian_finance_blob_id_v6';
-
-function getBlobId() {
-  return localStorage.getItem(BLOB_ID_KEY) || CLOUD_BLOB_ID;
-}
-
-function setBlobId(id) {
-  localStorage.setItem(BLOB_ID_KEY, id);
-}
+/* ===== 云端数据库配置（GitHub 仓库 + AES 加密）=====
+ * 数据以 AES-256-GCM 加密后存入 GitHub 公开仓库的 data/cloud.json 文件。
+ * 即使仓库完全公开，没有云同步密码也无法解密，杜绝明文泄露。
+ * 永久有效、免费、多设备同步。
+ */
+var CLOUD_CONFIG = {
+  owner: 'tiankai67',
+  repo: 'yuntian-finance',
+  path: 'data/cloud.json',
+  branch: 'main'
+};
 
 /* ===== 本地存储键 ===== */
 var STORAGE_KEY = 'yuntian_finance_v6';
 var SESSION_KEY = 'yuntian_finance_session';
+var CLOUD_TOKEN_KEY = 'yf_cloud_token';
+var CLOUD_PWD_KEY = 'yf_cloud_password';
+var CLOUD_EN_KEY = 'yf_cloud_enabled';
+
+/* ===== 云同步设置 ===== */
+function getCloudSettings() {
+  return {
+    token: localStorage.getItem(CLOUD_TOKEN_KEY) || '',
+    password: localStorage.getItem(CLOUD_PWD_KEY) || '',
+    enabled: localStorage.getItem(CLOUD_EN_KEY) === '1'
+  };
+}
+function setCloudSettings(s) {
+  localStorage.setItem(CLOUD_TOKEN_KEY, s.token || '');
+  localStorage.setItem(CLOUD_PWD_KEY, s.password || '');
+  localStorage.setItem(CLOUD_EN_KEY, s.enabled ? '1' : '0');
+}
+
+var lastCloudSha = null;
 
 /* ===== 默认数据 ===== */
 var defaultData = {
@@ -93,80 +106,158 @@ var categoryChart = null;
 var isCloudLoading = false;
 
 /* ============================================================
- * 云端数据库操作
+ * 云端数据库操作（GitHub 仓库 + AES-256-GCM 加密）
+ * 数据以密文形式存入公开仓库 data/cloud.json，无密码不可读。
  * ============================================================ */
 
-/* 从云端加载数据 */
-function cloudLoad(callback) {
-  var blobId = getBlobId();
-  var controller = new AbortController();
-  var timeoutId = setTimeout(function() { controller.abort(); }, 10000);
+/* base64 与二进制互转（分块处理，避免大数组 apply 栈溢出） */
+function bytesToBase64(bytes) {
+  var bin = '';
+  var chunk = 0x8000;
+  for (var i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+function base64ToBytes(b64) {
+  var bin = atob(b64);
+  var out = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
-  fetch(CLOUD_API + '/' + blobId, { signal: controller.signal })
-    .then(function(res) {
-      clearTimeout(timeoutId);
-      if (res.status === 404) {
-        // Blob 已过期，需要重建
-        callback('expired', null);
-      } else if (!res.ok) {
-        callback('error', null);
-      } else {
-        return res.json().then(function(data) { callback(null, data); });
-      }
+/* 用密码派生 AES 密钥（PBKDF2） */
+function deriveCloudKey(password, salt) {
+  return crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  ).then(function(km) {
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' },
+      km,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  });
+}
+
+/* 加密数据：salt(32) + iv(12) + (ciphertext+tag) → base64 */
+function encryptCloudData(data, password) {
+  var salt = crypto.getRandomValues(new Uint8Array(32));
+  var iv = crypto.getRandomValues(new Uint8Array(12));
+  return deriveCloudKey(password, salt)
+    .then(function(key) {
+      var plaintext = new TextEncoder().encode(JSON.stringify(data));
+      return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, plaintext);
     })
-    .catch(function(err) {
-      clearTimeout(timeoutId);
-      callback('network', null);
+    .then(function(ct) {
+      var out = new Uint8Array(salt.length + iv.length + ct.byteLength);
+      out.set(salt, 0);
+      out.set(iv, salt.length);
+      out.set(new Uint8Array(ct), salt.length + iv.length);
+      return bytesToBase64(out);
     });
 }
 
-/* 保存数据到云端 */
-function cloudSave(data, callback) {
-  var blobId = getBlobId();
-
-  fetch(CLOUD_API + '/' + blobId, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  })
-    .then(function(res) {
-      if (res.status === 404) {
-        // Blob 已过期，创建新 blob
-        return fetch(CLOUD_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
+/* 解密数据：base64 → salt(32) + iv(12) + (ciphertext+tag) → JSON */
+function decryptCloudData(b64, password) {
+  return new Promise(function(resolve, reject) {
+    try {
+      var combined = base64ToBytes(b64);
+      var salt = combined.slice(0, 32);
+      var iv = combined.slice(32, 44);
+      var ct = combined.slice(44);
+      deriveCloudKey(password, salt)
+        .then(function(key) {
+          return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, ct);
         })
-          .then(function(res2) {
-            // 从 Location header 获取新 blob ID
-            var location = res2.headers.get('Location') || res2.headers.get('location');
-            if (location) {
-              var newId = location.split('/').pop();
-              setBlobId(newId);
-            }
-            return res2.json();
-          });
-      }
-      if (!res.ok) throw new Error('Save failed');
-      return res.json();
-    })
-    .then(function() { if (callback) callback(null); })
-    .catch(function(err) { if (callback) callback(err); });
+        .then(function(pt) {
+          resolve(JSON.parse(new TextDecoder().decode(pt)));
+        })
+        .catch(function(e) { reject(e); });
+    } catch (e) { reject(e); }
+  });
 }
 
-/* ============================================================
- * Keep-alive 心跳：定期 ping 云端 blob，防止 24 小时过期
- * ============================================================ */
-var keepAliveTimer = null;
+/* 从 GitHub 加载加密数据 */
+function cloudLoad(callback) {
+  var s = getCloudSettings();
+  if (!s.enabled || !s.token) { callback('disabled', null); return; }
 
-function startKeepAlive() {
-  if (keepAliveTimer) return;
-  // 每 2 小时 ping 一次 blob，保持活跃
-  keepAliveTimer = setInterval(function() {
-    var blobId = getBlobId();
-    fetch(CLOUD_API + '/' + blobId, { method: 'HEAD' })
-      .catch(function() {});
-  }, 2 * 60 * 60 * 1000);
+  var url = 'https://api.github.com/repos/' + CLOUD_CONFIG.owner + '/' + CLOUD_CONFIG.repo +
+            '/contents/' + CLOUD_CONFIG.path + '?ref=' + CLOUD_CONFIG.branch;
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+
+  fetch(url, {
+    headers: { 'Authorization': 'token ' + s.token, 'Accept': 'application/vnd.github.v3+json' },
+    signal: controller.signal
+  })
+    .then(function(res) {
+      clearTimeout(timeoutId);
+      if (res.status === 404) { callback('empty', null); return; }
+      if (res.status === 401 || res.status === 403) { callback('auth', null); return; }
+      if (!res.ok) { callback('error', null); return; }
+      return res.json().then(function(json) {
+        try {
+          var content = atob(json.content.replace(/\s/g, ''));
+          decryptCloudData(content, s.password)
+            .then(function(data) { lastCloudSha = json.sha; callback(null, data); })
+            .catch(function() { callback('password', null); });
+        } catch (e) { callback('error', null); }
+      });
+    })
+    .catch(function() { clearTimeout(timeoutId); callback('network', null); });
+}
+
+/* 保存加密数据到 GitHub（last-write-wins + sha 冲突重试） */
+function cloudSave(data, callback) {
+  var s = getCloudSettings();
+  if (!s.enabled || !s.token) { if (callback) callback('disabled'); return; }
+
+  function doPut(sha) {
+    return encryptCloudData(data, s.password).then(function(b64) {
+      var url = 'https://api.github.com/repos/' + CLOUD_CONFIG.owner + '/' + CLOUD_CONFIG.repo +
+                '/contents/' + CLOUD_CONFIG.path;
+      var body = {
+        message: 'Update cloud data ' + new Date().toISOString(),
+        content: b64,
+        branch: CLOUD_CONFIG.branch
+      };
+      if (sha) body.sha = sha;
+      return fetch(url, {
+        method: 'PUT',
+        headers: { 'Authorization': 'token ' + s.token, 'Content-Type': 'application/json', 'Accept': 'application/vnd.github.v3+json' },
+        body: JSON.stringify(body)
+      }).then(function(res) { return { ok: res.ok, status: res.status }; });
+    });
+  }
+
+  doPut(lastCloudSha)
+    .then(function(r) {
+      if (r.ok) { if (callback) callback(null); return; }
+      if (r.status === 409) {
+        // 远端已变更，仅重新读取 sha（不刷新 UI），再以本地数据覆盖
+        var chkUrl = 'https://api.github.com/repos/' + CLOUD_CONFIG.owner + '/' + CLOUD_CONFIG.repo +
+                     '/contents/' + CLOUD_CONFIG.path + '?ref=' + CLOUD_CONFIG.branch;
+        fetch(chkUrl, { headers: { 'Authorization': 'token ' + s.token, 'Accept': 'application/vnd.github.v3+json' } })
+          .then(function(res) { return res.ok ? res.json() : null; })
+          .then(function(json) {
+            lastCloudSha = json ? json.sha : null;
+            doPut(lastCloudSha).then(function(r2) {
+              if (callback) callback(r2.ok ? null : 'error');
+            });
+          })
+          .catch(function() { if (callback) callback('network'); });
+        return;
+      }
+      if (callback) callback('error');
+    })
+    .catch(function() { if (callback) callback('network'); });
 }
 
 /* ============================================================
@@ -249,6 +340,26 @@ function saveLocalData() {
 
 /* 从云端加载并更新本地 - 多层恢复策略 */
 function loadCloudData() {
+  var s = getCloudSettings();
+
+  // 云端未启用：仅用本地缓存
+  if (!s.enabled || !s.token) {
+    var localOnly = loadLocalData();
+    if (localOnly) {
+      appData = localOnly;
+    } else {
+      appData = JSON.parse(JSON.stringify(defaultData));
+      saveLocalData();
+    }
+    normalizeData(appData);
+    setSyncStatus('local');
+    if (document.getElementById('app').style.display !== 'none') {
+      initUI();
+      renderAll();
+    }
+    return;
+  }
+
   setSyncStatus('syncing');
   isCloudLoading = true;
 
@@ -256,7 +367,7 @@ function loadCloudData() {
     isCloudLoading = false;
 
     if (!err && data && data.settings) {
-      // ===== Layer 1: 云端数据可用 =====
+      // ===== 云端加密数据可用 =====
       appData = data;
       normalizeData(appData);
       saveLocalData();
@@ -265,15 +376,13 @@ function loadCloudData() {
         initUI();
         renderAll();
       }
-    } else if (err === 'expired') {
-      // ===== Layer 2: Blob 过期，尝试本地缓存 =====
+    } else if (err === 'empty') {
+      // ===== 云端无文件，用本地缓存上传（首次同步/迁移）=====
       var localData = loadLocalData();
-      if (localData && localData.members && localData.members.length > 0) {
-        // 本地缓存有队员数据，直接用
+      if (localData) {
         appData = localData;
         normalizeData(appData);
         saveLocalData();
-        setSyncStatus('syncing');
         cloudSave(appData, function(saveErr) {
           setSyncStatus(saveErr ? 'error' : 'synced');
           if (document.getElementById('app').style.display !== 'none') {
@@ -282,14 +391,11 @@ function loadCloudData() {
           }
         });
       } else {
-        // ===== Layer 3: 无本地缓存，尝试加密回退数据 =====
         recoverFromFallback(function(decryptedData) {
           if (decryptedData) {
-            // 解密成功，使用回退数据
             appData = decryptedData;
             normalizeData(appData);
             saveLocalData();
-            setSyncStatus('syncing');
             cloudSave(appData, function(saveErr) {
               setSyncStatus(saveErr ? 'error' : 'synced');
               if (document.getElementById('app').style.display !== 'none') {
@@ -298,7 +404,6 @@ function loadCloudData() {
               }
             });
           } else {
-            // ===== Layer 4: 全部失败，使用默认空数据 =====
             appData = JSON.parse(JSON.stringify(defaultData));
             saveLocalData();
             setSyncStatus('error');
@@ -309,25 +414,38 @@ function loadCloudData() {
           }
         });
       }
-    } else {
-      // 网络错误，使用本地数据
-      var fallback = loadLocalData();
-      if (fallback && fallback.members && fallback.members.length > 0) {
-        appData = fallback;
-      } else if (fallback) {
-        appData = fallback;
-      } else {
-        appData = JSON.parse(JSON.stringify(defaultData));
-        saveLocalData();
-      }
-      normalizeData(appData);
+    } else if (err === 'auth') {
+      // Token 无效
       setSyncStatus('error');
-      if (document.getElementById('app').style.display !== 'none') {
-        initUI();
-        renderAll();
-      }
+      showToast('云端同步失败：GitHub Token 无效或无权限', 'error');
+      useLocalFallback();
+    } else if (err === 'password') {
+      // 解密密码错误
+      setSyncStatus('error');
+      showToast('云端数据解密失败：云同步密码错误', 'error');
+      useLocalFallback();
+    } else {
+      // 网络/其他错误，使用本地缓存
+      useLocalFallback();
     }
   });
+}
+
+/* 网络/认证异常时退回本地缓存 */
+function useLocalFallback() {
+  var fallback = loadLocalData();
+  if (fallback) {
+    appData = fallback;
+  } else {
+    appData = JSON.parse(JSON.stringify(defaultData));
+    saveLocalData();
+  }
+  normalizeData(appData);
+  setSyncStatus('error');
+  if (document.getElementById('app').style.display !== 'none') {
+    initUI();
+    renderAll();
+  }
 }
 
 /* 数据规范化（补充缺失字段） */
@@ -426,9 +544,17 @@ function recoverFromFallback(callback) {
 /* 保存数据到本地 + 云端 */
 function saveData() {
   saveLocalData();
+  var s = getCloudSettings();
+  if (!s.enabled || !s.token) {
+    setSyncStatus('local');
+    return;
+  }
   setSyncStatus('syncing');
   cloudSave(appData, function(err) {
-    if (err) {
+    if (err === 'password') {
+      setSyncStatus('error');
+      showToast('云端解密密码错误', 'error');
+    } else if (err) {
       setSyncStatus('error');
     } else {
       setSyncStatus('synced');
@@ -652,11 +778,11 @@ function showApp() {
   initUI();
   renderAll();
 
-  // 然后从云端加载最新数据
+  // 然后从云端加载最新数据（GitHub 长期存储，无需保活）
   loadCloudData();
 
-  // 启动 keep-alive 心跳，防止 blob 过期
-  startKeepAlive();
+  // 填充云端同步设置 UI
+  loadCloudSettingsUI();
 }
 
 /* ============================================================
@@ -669,7 +795,8 @@ function setSyncStatus(status) {
   el.className = 'sync-status ' + status;
   var labels = {
     'syncing': '同步中...',
-    'synced': '已同步',
+    'synced': '已同步（云端加密）',
+    'local': '仅本地（未开启云同步）',
     'error': '同步失败',
     '加载中...': '加载中...'
   };
@@ -1847,6 +1974,11 @@ function bindEvents() {
   document.getElementById('reset-btn').addEventListener('click', resetData);
   document.getElementById('save-settings').addEventListener('click', saveSettings);
 
+  // 云端加密同步
+  document.getElementById('cloud-save-btn').addEventListener('click', cloudSaveBtnHandler);
+  document.getElementById('cloud-test-btn').addEventListener('click', cloudTestBtnHandler);
+  document.getElementById('cloud-disable-btn').addEventListener('click', cloudDisableBtnHandler);
+
   // 队员名单
   document.getElementById('add-member-btn').addEventListener('click', addMemberPrompt);
   document.getElementById('new-round-btn').addEventListener('click', startNewMeetingRound);
@@ -1858,6 +1990,97 @@ function bindEvents() {
   document.querySelectorAll('input[name="rr-type"]').forEach(function(radio) {
     radio.addEventListener('change', function() { updateRrCategoryOptions(radio.value); });
   });
+}
+
+/* ============================================================
+ * 云端加密同步设置
+ * ============================================================ */
+function loadCloudSettingsUI() {
+  var s = getCloudSettings();
+  var tokenEl = document.getElementById('cloud-token');
+  var pwdEl = document.getElementById('cloud-password');
+  if (tokenEl && s.token) tokenEl.value = s.token;
+  if (pwdEl) pwdEl.value = '';
+  var msg = document.getElementById('cloud-status-msg');
+  if (msg) {
+    if (s.enabled && s.token) msg.textContent = '✅ 云端同步已开启（数据已 AES 加密）';
+    else msg.textContent = '⚠️ 云端同步未开启，数据仅存本地浏览器';
+  }
+}
+
+function showCloudMsg(text, type) {
+  var msg = document.getElementById('cloud-status-msg');
+  if (msg) {
+    msg.textContent = text;
+    msg.className = 'card-desc' + (type ? ' status-' + type : '');
+  }
+}
+
+function cloudSaveBtnHandler() {
+  var token = (document.getElementById('cloud-token').value || '').trim();
+  var pwd = document.getElementById('cloud-password').value || '';
+  if (!token) { showCloudMsg('请输入 GitHub Token', 'error'); return; }
+  var s = getCloudSettings();
+  // 首次开启或密码为空时，必须有密码用于加密
+  if ((!s.enabled || !s.password) && !pwd) {
+    showCloudMsg('首次开启需设置云同步密码（用于加密）', 'error');
+    return;
+  }
+  var newPwd = pwd || s.password;
+  var testData = appData || loadLocalData() || JSON.parse(JSON.stringify(defaultData));
+  // 1) 本地加密/解密自测
+  encryptCloudData(testData, newPwd)
+    .then(function(b64) { return decryptCloudData(b64, newPwd); })
+    .then(function() {
+      // 2) 保存设置并上传
+      setCloudSettings({ token: token, password: newPwd, enabled: true });
+      lastCloudSha = null;
+      showCloudMsg('正在加密并上传数据...', '');
+      cloudSave(testData, function(err) {
+        if (err === 'auth') {
+          setCloudSettings({ token: '', password: '', enabled: false });
+          showCloudMsg('Token 无效或无权限，请检查后重试', 'error');
+        } else if (err) {
+          showCloudMsg('数据已本地保存，但上传失败：' + err + '。可稍后点"测试连接"或重新开启', 'error');
+        } else {
+          showCloudMsg('✅ 同步已开启，数据已加密上传至 GitHub', 'success');
+        }
+        loadCloudSettingsUI();
+      });
+    })
+    .catch(function() { showCloudMsg('密码处理失败', 'error'); });
+}
+
+function cloudTestBtnHandler() {
+  var token = (document.getElementById('cloud-token').value || '').trim();
+  var pwd = document.getElementById('cloud-password').value || '';
+  var prev = getCloudSettings();
+  token = token || prev.token;
+  pwd = pwd || prev.password;
+  if (!token) { showCloudMsg('请先输入或保存 Token', 'error'); return; }
+  if (!pwd) { showCloudMsg('请先输入云同步密码', 'error'); return; }
+  // 临时启用以便 cloudLoad 读取
+  setCloudSettings({ token: token, password: pwd, enabled: true });
+  showCloudMsg('正在测试连接...', '');
+  cloudLoad(function(err) {
+    if (err === 'auth') showCloudMsg('Token 无效或无权限', 'error');
+    else if (err === 'empty') showCloudMsg('连接成功！云端暂无数据，开启同步将上传本地数据', 'success');
+    else if (err === 'password') showCloudMsg('连接成功，但云同步密码不匹配', 'error');
+    else if (err) showCloudMsg('连接异常：' + err, 'error');
+    else showCloudMsg('连接成功！云端数据已可解密', 'success');
+    // 恢复原始启用状态（测试不改变设置）
+    setCloudSettings(prev);
+    loadCloudSettingsUI();
+  });
+}
+
+function cloudDisableBtnHandler() {
+  var s = getCloudSettings();
+  if (!s.enabled) { showCloudMsg('云端同步本就未开启', ''); return; }
+  setCloudSettings({ token: s.token, password: s.password, enabled: false });
+  setSyncStatus('local');
+  showCloudMsg('云端同步已关闭，数据仅存本地浏览器', '');
+  loadCloudSettingsUI();
 }
 
 /* ============================================================
