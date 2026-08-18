@@ -204,7 +204,9 @@ function cloudLoad(callback) {
       if (!res.ok) { callback('error', null); return; }
       return res.json().then(function(json) {
         try {
-          var content = atob(json.content.replace(/\s/g, ''));
+          // GitHub contents API 返回的 json.content 本身就是 base64 字符串，
+          // decryptCloudData 内部会再次 base64 解码，这里【不能再 atob 一次】，否则双重解码必失败。
+          var content = json.content.replace(/\s/g, '');
           decryptCloudData(content, s.password)
             .then(function(data) { lastCloudSha = json.sha; callback(null, data); })
             .catch(function() { callback('password', null); });
