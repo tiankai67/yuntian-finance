@@ -1,0 +1,26 @@
+name: Keep-Alive Cloud Blob
+
+on:
+  schedule:
+    # 每 6 小时运行一次（UTC 时间 0,6,12,18 点）
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping jsonblob.com blob
+        run: |
+          BLOB_ID="019fb0ce-db4e-73b4-88f1-692aae908739"
+          echo "Pinging blob: $BLOB_ID"
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "https://jsonblob.com/api/jsonBlob/$BLOB_ID")
+          echo "HTTP Status: $RESPONSE"
+          if [ "$RESPONSE" = "404" ]; then
+            echo "WARNING: Blob has expired! The app will auto-recover on next access."
+            echo "::warning::Blob $BLOB_ID has expired. App will use encrypted fallback on next access."
+          elif [ "$RESPONSE" = "200" ]; then
+            echo "Blob is alive."
+          else
+            echo "Unexpected response: $RESPONSE"
+          fi

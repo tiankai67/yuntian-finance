@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>云天小队 - 财务管理系统</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ===== Login Screen ===== -->
+<div id="login-screen" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <span class="login-emoji">☁️</span>
+      <h1>云天小队</h1>
+      <p>财务管理系统</p>
+    </div>
+    <form id="login-form" class="login-form">
+      <div class="form-group">
+        <label for="login-username">账号</label>
+        <input type="text" id="login-username" placeholder="请输入账号" autocomplete="off" required>
+      </div>
+      <div class="form-group">
+        <label for="login-password">密码</label>
+        <input type="password" id="login-password" placeholder="请输入密码" required>
+      </div>
+      <div id="login-error" class="login-error" style="display:none"></div>
+      <button type="submit" class="btn btn-primary btn-block">登 录</button>
+    </form>
+    <p class="login-hint">仅限授权成员访问</p>
+  </div>
+</div>
+
+<!-- ===== Main App ===== -->
+<div id="app" class="app" style="display:none">
+
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-logo">☁️</span>
+      <span class="topbar-title">云天小队财务系统</span>
+    </div>
+    <div class="topbar-right">
+      <span id="sync-status" class="sync-status">加载中...</span>
+      <span id="current-date" class="topbar-date"></span>
+      <button id="logout-btn" class="btn btn-text">退出</button>
+    </div>
+  </header>
+
+  <!-- Tab Nav -->
+  <nav class="tabnav">
+    <button class="tab-btn active" data-tab="overview">概览</button>
+    <button class="tab-btn" data-tab="record">记账</button>
+    <button class="tab-btn" data-tab="recurring">循环记账</button>
+    <button class="tab-btn" data-tab="stats">统计</button>
+    <button class="tab-btn" data-tab="roster">名单</button>
+    <button class="tab-btn" data-tab="settings">设置</button>
+  </nav>
+
+  <!-- ===== Tab: Overview ===== -->
+  <div id="tab-overview" class="tab-content active">
+    <div class="balance-card">
+      <div class="balance-label">当前余额</div>
+      <div class="balance-amount" id="overview-balance">¥0.00</div>
+      <div class="balance-meta">
+        <span id="overview-last-update">--</span>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card stat-income">
+        <div class="stat-label">本月收入</div>
+        <div class="stat-value" id="overview-month-income">¥0.00</div>
+      </div>
+      <div class="stat-card stat-expense">
+        <div class="stat-label">本月支出</div>
+        <div class="stat-value" id="overview-month-expense">¥0.00</div>
+      </div>
+      <div class="stat-card stat-fund">
+        <div class="stat-label">货币基金累计收益</div>
+        <div class="stat-value" id="overview-fund-total">¥0.00</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <h2>最近交易</h2>
+      <button class="btn btn-small btn-primary" onclick="switchTab('record')">+ 记一笔</button>
+    </div>
+    <div id="overview-recent" class="tx-list"></div>
+  </div>
+
+  <!-- ===== Tab: Record ===== -->
+  <div id="tab-record" class="tab-content">
+    <div class="card">
+      <h2 class="card-title">记一笔</h2>
+      <form id="tx-form" class="tx-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label>类型</label>
+            <div class="type-toggle">
+              <label class="type-option">
+                <input type="radio" name="tx-type" value="income" checked>
+                <span class="type-income">收入</span>
+              </label>
+              <label class="type-option">
+                <input type="radio" name="tx-type" value="expense">
+                <span class="type-expense">支出</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="tx-amount">金额（元）</label>
+            <input type="number" id="tx-amount" step="0.01" min="0" placeholder="0.00" required>
+          </div>
+          <div class="form-group">
+            <label for="tx-date">日期</label>
+            <input type="date" id="tx-date" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="tx-category">分类</label>
+          <select id="tx-category"></select>
+        </div>
+        <div class="form-group">
+          <label for="tx-description">备注</label>
+          <input type="text" id="tx-description" placeholder="可选备注">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">确认记账</button>
+      </form>
+    </div>
+
+    <div class="section-header">
+      <h2>交易记录</h2>
+    </div>
+    <div class="filter-bar">
+      <select id="filter-type">
+        <option value="">全部类型</option>
+        <option value="income">收入</option>
+        <option value="expense">支出</option>
+      </select>
+      <select id="filter-category">
+        <option value="">全部分类</option>
+      </select>
+      <input type="date" id="filter-start" placeholder="开始日期">
+      <input type="date" id="filter-end" placeholder="结束日期">
+      <button class="btn btn-small" id="filter-apply">筛选</button>
+      <button class="btn btn-small" id="filter-reset">重置</button>
+    </div>
+    <div id="tx-list" class="tx-list"></div>
+  </div>
+
+  <!-- ===== Tab: Recurring ===== -->
+  <div id="tab-recurring" class="tab-content">
+    <div class="card">
+      <h2 class="card-title">添加循环记账规则</h2>
+      <p class="card-desc">设置后系统将自动按规则生成交易记录</p>
+      <form id="recurring-form" class="tx-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label>类型</label>
+            <div class="type-toggle">
+              <label class="type-option">
+                <input type="radio" name="rr-type" value="income" checked>
+                <span class="type-income">收入</span>
+              </label>
+              <label class="type-option">
+                <input type="radio" name="rr-type" value="expense">
+                <span class="type-expense">支出</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="rr-amount">每次金额（元）</label>
+            <input type="number" id="rr-amount" step="0.01" min="0" placeholder="0.00" required>
+          </div>
+          <div class="form-group">
+            <label for="rr-frequency">频率</label>
+            <select id="rr-frequency">
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="rr-start">开始日期</label>
+            <input type="date" id="rr-start" required>
+          </div>
+          <div class="form-group">
+            <label for="rr-end">结束日期（可选）</label>
+            <input type="date" id="rr-end">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="rr-category">分类</label>
+          <select id="rr-category"></select>
+        </div>
+        <div class="form-group">
+          <label for="rr-description">备注</label>
+          <input type="text" id="rr-description" placeholder="如：货币基金每日收益">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">添加规则</button>
+      </form>
+    </div>
+
+    <div class="section-header">
+      <h2>循环记账规则</h2>
+    </div>
+    <div id="recurring-list" class="rule-list"></div>
+  </div>
+
+  <!-- ===== Tab: Statistics ===== -->
+  <div id="tab-stats" class="tab-content">
+    <div class="card">
+      <h2 class="card-title">财务统计</h2>
+      <div class="stats-filter">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="stats-start">开始日期</label>
+            <input type="date" id="stats-start">
+          </div>
+          <div class="form-group">
+            <label for="stats-end">结束日期</label>
+            <input type="date" id="stats-end">
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="stats-category">分类筛选</label>
+            <select id="stats-category">
+              <option value="">全部分类</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>快捷选择</label>
+            <div class="quick-range">
+              <button class="btn btn-small" data-range="week">本周</button>
+              <button class="btn btn-small" data-range="month">本月</button>
+              <button class="btn btn-small" data-range="quarter">本季度</button>
+              <button class="btn btn-small" data-range="year">本年</button>
+              <button class="btn btn-small" data-range="all">全部</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" id="stats-apply">生成统计</button>
+      </div>
+    </div>
+
+    <div id="stats-summary" class="stats-summary" style="display:none">
+      <div class="stat-card stat-income">
+        <div class="stat-label">总收入</div>
+        <div class="stat-value" id="stats-total-income">¥0.00</div>
+      </div>
+      <div class="stat-card stat-expense">
+        <div class="stat-label">总支出</div>
+        <div class="stat-value" id="stats-total-expense">¥0.00</div>
+      </div>
+      <div class="stat-card stat-net">
+        <div class="stat-label">净变动</div>
+        <div class="stat-value" id="stats-net">¥0.00</div>
+      </div>
+      <div class="stat-card stat-count">
+        <div class="stat-label">交易笔数</div>
+        <div class="stat-value" id="stats-count">0</div>
+      </div>
+    </div>
+
+    <div id="stats-charts" style="display:none">
+      <div class="card">
+        <h3 class="card-title">收支趋势</h3>
+        <canvas id="chart-trend" height="200"></canvas>
+      </div>
+      <div class="card">
+        <h3 class="card-title">分类分布</h3>
+        <canvas id="chart-category" height="200"></canvas>
+      </div>
+    </div>
+
+    <div id="stats-fund-detail" class="card" style="display:none">
+      <h3 class="card-title">货币基金收益明细</h3>
+      <div id="fund-detail-content"></div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Roster ===== -->
+  <div id="tab-roster" class="tab-content">
+    <div class="card">
+      <div class="section-header" style="margin-bottom: 0;">
+        <h2 class="card-title">汤阴云天小队队员名单</h2>
+        <button class="btn btn-small btn-primary" id="add-member-btn">+ 添加队员</button>
+      </div>
+    </div>
+
+    <!-- Meeting Round Card -->
+    <div class="card meeting-round-card">
+      <div class="meeting-round-header">
+        <h3 class="meeting-round-title">例会轮次</h3>
+        <button class="btn btn-small btn-danger" id="new-round-btn">开始新一轮</button>
+      </div>
+      <div class="meeting-round-stats">
+        <span class="meeting-round-label">第 <strong id="meeting-round-num">1</strong> 轮</span>
+        <span class="meeting-round-progress">正式队员已办 <strong id="meeting-done-count">0</strong> / <strong id="meeting-total-count">0</strong> 人</span>
+      </div>
+      <div class="meeting-progress-bar">
+        <div class="meeting-progress-fill" id="meeting-progress-fill" style="width:0%"></div>
+      </div>
+    </div>
+
+    <div id="roster-container"></div>
+  </div>
+
+  <!-- ===== Tab: Settings ===== -->
+  <div id="tab-settings" class="tab-content">
+    <div class="card">
+      <h2 class="card-title">数据管理</h2>
+      <div class="settings-actions">
+        <button class="btn btn-primary" id="export-btn">导出数据</button>
+        <button class="btn" id="import-btn">导入数据</button>
+        <input type="file" id="import-file" accept=".json" style="display:none">
+        <button class="btn btn-danger" id="reset-btn">重置数据</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">初始设置</h2>
+      <div class="form-group">
+        <label for="setting-team-name">小队名称</label>
+        <input type="text" id="setting-team-name">
+      </div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="setting-init-balance">初始余额（元）</label>
+          <input type="number" id="setting-init-balance" step="0.01">
+        </div>
+        <div class="form-group">
+          <label for="setting-init-date">初始日期</label>
+          <input type="date" id="setting-init-date">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="save-settings">保存设置</button>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">分类管理</h2>
+      <p class="card-desc">添加、编辑或删除收支分类</p>
+      <div class="category-manager">
+        <div class="cat-section">
+          <div class="cat-section-header">
+            <h3 class="cat-section-title"><span class="cat-dot cat-dot-income"></span>收入分类</h3>
+            <button class="btn btn-small btn-primary" onclick="addCategoryPrompt('income')">+ 添加</button>
+          </div>
+          <div id="cat-list-income" class="cat-list"></div>
+        </div>
+        <div class="cat-section">
+          <div class="cat-section-header">
+            <h3 class="cat-section-title"><span class="cat-dot cat-dot-expense"></span>支出分类</h3>
+            <button class="btn btn-small btn-primary" onclick="addCategoryPrompt('expense')">+ 添加</button>
+          </div>
+          <div id="cat-list-expense" class="cat-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">数据管理</h2>
+      <p class="card-desc">云端数据过期或队员名单丢失时，可从加密备份恢复</p>
+      <button class="btn btn-primary" onclick="manualRecoverFallback()">恢复初始队员名单</button>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">关于</h2>
+      <p class="about-text">云天小队财务管理系统 v2.0</p>
+      <p class="about-text">功能：收支记账、循环记账、统计分析、云端同步</p>
+      <p class="about-text-muted">数据存储于云端数据库，多设备自动同步</p>
+      <p class="about-text-muted">多层数据保护：云端实时同步 + 本地缓存 + 加密回退 + 定时保活</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- Loading Overlay -->
+<div id="loading-overlay" class="loading-overlay" style="display:none">
+  <div class="spinner"></div>
+  <p id="loading-text">正在同步数据...</p>
+</div>
+
+<!-- Category Edit Overlay -->
+<div id="category-edit-overlay" class="delete-password-overlay" style="display:none">
+  <div class="delete-password-card">
+    <div class="delete-password-header">
+      <span id="cat-edit-title" class="delete-password-title">添加分类</span>
+      <span id="cat-edit-close" class="delete-password-close">&times;</span>
+    </div>
+    <p class="delete-password-desc" id="cat-edit-desc">请输入分类名称</p>
+    <input type="text" id="cat-edit-input" class="delete-password-input" placeholder="分类名称" autocomplete="off">
+    <div id="cat-edit-error" class="delete-password-error" style="display:none">分类名称不能为空</div>
+    <div class="delete-password-actions">
+      <button class="btn" id="cat-edit-cancel">取消</button>
+      <button class="btn btn-primary" id="cat-edit-submit">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- Member Edit Overlay -->
+<div id="member-edit-overlay" class="delete-password-overlay" style="display:none">
+  <div class="delete-password-card member-edit-card">
+    <div class="delete-password-header">
+      <span id="member-edit-title" class="delete-password-title">添加队员</span>
+      <span id="member-edit-close" class="delete-password-close">&times;</span>
+    </div>
+    <p class="delete-password-desc" id="member-edit-desc">请输入队员信息</p>
+    <div class="member-form">
+      <div class="form-group">
+        <label>类别</label>
+        <select id="member-category">
+          <option value="荣誉队长">荣誉队长</option>
+          <option value="正式队员">正式队员</option>
+          <option value="保留队员">保留队员</option>
+        </select>
+      </div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label>姓名</label>
+          <input type="text" id="member-name" placeholder="队员姓名" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>生日（农历）</label>
+          <input type="text" id="member-birthday" placeholder="如：1986年03月09日" autocomplete="off">
+        </div>
+      </div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label>联系电话</label>
+          <input type="text" id="member-phone" placeholder="手机号码" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>备注</label>
+          <input type="text" id="member-remark" placeholder="如：队长" autocomplete="off">
+        </div>
+      </div>
+    </div>
+    <div id="member-edit-error" class="delete-password-error" style="display:none">请填写姓名</div>
+    <div class="delete-password-actions">
+      <button class="btn" id="member-edit-cancel">取消</button>
+      <button class="btn btn-primary" id="member-edit-submit">确认</button>
+    </div>
+  </div>
+</div>
+
+<div id="delete-password-overlay" class="delete-password-overlay" style="display:none">
+  <div class="delete-password-card">
+    <div class="delete-password-header">
+      <span id="delete-password-title" class="delete-password-title">操作验证</span>
+      <span id="delete-password-close" class="delete-password-close">&times;</span>
+    </div>
+    <p id="delete-password-desc" class="delete-password-desc">请输入密码以确认操作</p>
+    <input type="password" id="delete-password-input" class="delete-password-input" placeholder="请输入密码" autocomplete="off">
+    <div id="delete-password-error" class="delete-password-error" style="display:none">密码错误，请重试</div>
+    <div class="delete-password-actions">
+      <button class="btn" id="delete-password-cancel">取消</button>
+      <button class="btn btn-primary" id="delete-password-submit">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<script src="config.local.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
